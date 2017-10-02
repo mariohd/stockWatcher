@@ -2,231 +2,349 @@ const yahooFinance = require('yahoo-finance');
 const notifier = require('node-notifier');
 const blessed = require('blessed')
 const contrib = require('blessed-contrib');
+const argv = require('minimist')(process.argv.slice(2));
+const table = require('./table');
+const path = require('path');
+
+contrib.table = table;
+
+if (! argv._ ) {
+  console.log("ERROR - You should provide at least one symbol. Example: node index.js BRL=X EURBRL=X");
+  process.exit(1);
+}
 
 const screen = blessed.screen();
+let grid = new contrib.grid({
+  rows: 12,
+  cols: 12,
+  screen: screen
+});
 
-var grid = new contrib.grid({
-    rows: 12,
-    cols: 12,
-    screen: screen
-})
-
-const symbols = ['BRL=X', 'EURBRL=X'];
-
-let USDLine = grid.set(0, 0, 6, 10, contrib.line, {
-    label: 'Currency Wacther - USD',
-    showLegend: true,
-    legend: {
-        width: 10
+const QUOTE_STATUS = {
+    initial: {
+        status: "EVEN",
+        color: [160, 160, 25] // yellow
     },
-    minY: 3.10,
-    numYLabels: 12
-});
-
-let USDMonitor = grid.set(0, 10, 3, 2, contrib.table, {
-    label: 'USD Monitor',
-    keys: true,
-    columnSpacing: 1,
-    columnWidth: [17, 8, 8],
-    interactive: false
-});
-
-USDMonitor.on('click', (data) => {
-    notification = false;
-    screen.render();
-});
-
-notification = true;
-
-let USDLCD = grid.set(3, 10, 3, 2, contrib.lcd,
-       { display: 'EVEN', color: 'yellow', elementPadding: 2, elements: 4 });
-
-let EURLine = grid.set(6, 0, 6, 10, contrib.line, {
-    label: 'Currency Wacther - EUR',
-    showLegend: true,
-    legend: {
-        width: 10
+    up: {
+        status: " UP ",
+        color: [28, 188, 57] // green
     },
-    minY: 3.60,
-    numYLabels: 12
-});
-
-let EURMonitor = grid.set(6, 10, 3, 2, contrib.table, {
-    label: 'EUR Monitor',
-    keys: true,
-    columnSpacing: 1,
-    columnWidth: [17, 8, 8],
-    interactive: false
-});
-
-let EURLCD = grid.set(9, 10, 3, 2, contrib.lcd,
-       { display: 'EVEN', color: 'yellow', elementPadding: 2, elements: 4 });
-
-const data = symbols.map(s => {
-    return {
-        title: s,
-        x: [],
-        y: [],
-        style: {
-            line: 'yellow'
-        }
-    };
-});
-
-/*
-price: 
-   { maxAge: 1,
-     regularMarketChangePercent: -0.0056250365,
-     regularMarketChange: -0.01789999,
-     regularMarketTime: 2017-09-29T14:48:45.000Z,
-     priceHint: 4,
-     regularMarketPrice: 3.1643,
-     regularMarketDayHigh: 3.1899,
-     regularMarketDayLow: 3.1494,
-     regularMarketVolume: 0,
-     averageDailyVolume10Day: 0,
-     averageDailyVolume3Month: 0,
-     regularMarketPreviousClose: 3.1822,
-     regularMarketSource: 'DELAYED',
-     regularMarketOpen: 3.182,
-     exchange: 'CCY',
-     exchangeName: 'CCY',
-     marketState: 'REGULAR',
-     quoteType: 'CURRENCY',
-     symbol: 'BRL=X',
-     underlyingSymbol: null,
-     shortName: 'USD/BRL',
-     longName: null,
-     currency: 'BRL',
-     quoteSourceName: 'Delayed Quote',
-     currencySymbol: 'R$' 
-} }
-*/
-
-USDLine.setData(data[0]);
-EURLine.setData(data[1]);
+    down: {
+        status: "DOWN",
+        color: [188, 28, 28] // red
+    }
+};
+const symbols = argv._;
+let selectedMonitor = 0;
 
 screen.key(['escape', 'q', 'C-c'], function(ch, key) {
     return process.exit(0);
 });
 
-screen.render()
-
-let limits = {
-    max: '0,5%',
-    min: '-0,5%'
-}
-
-for (var p = 2; p <= process.argv.length; p += 2) {
-
-    if (/^--min$/.test(process.argv[p])) {
-        limits.min = parseFloat(process.argv[p + 1]);
-    }
-
-    if (/^--max$/.test(process.argv[p])) {
-        limits.max = parseFloat(process.argv[p + 1]);
-    }
+function fetchQuote(symbol) {
+  return yahooFinance.quote({
+    symbol: symbol,
+    modules: ['price']
+  });
 };
 
-/*
-notifier.notify({
-    'title': 'Currency Watcher',
-    'message': `Starting to monitor limits between ${limits.min} and ${limits.max}`
-});
-*/
+function parse(quote) {
+    return {
+      symbol: quote.price.symbol,
+      currency: quote.price.currencySymbol,
+      current: quote.price.regularMarketPrice,
+      open: quote.price.regularMarketOpen,
+      changePercent: quote.price.regularMarketChangePercent,
+      change: quote.price.regularMarketChange,
+      highest: quote.price.regularMarketDayHigh,
+      lowest: quote.price.regularMarketDayLow
+    };
+};
 
-function verify() {
-    symbols.forEach((s) => {
-        yahooFinance.quote({
-            symbol: s,
-            modules: ['price', 'summaryDetail']
-        }, function(err, quotes) {
-            if (err) {} else {
-                if (quotes) {
-                    let current = quotes.price.regularMarketPrice;
+function createSymbolLine(symbol, position, size) {
+  let line = grid.set(position.x, position.y, size.height, size.width, contrib.line, {
+    label: `Currency Wacther - ${symbol}`,
+    showLegend: true,
+    legend: {
+        width: 10
+    },
+    minY: 0,
+    numYLabels: 12
+  });
 
-                    /* 
-                    if (typeof limits.max !== "number") limits.max = quotes.price.regularMarketOpen * 1.005
-                    if (current >= limits.max) {
-                        notifier.notify({
-                            'title': 'Hora de ficar rico',
-                            'message': `RUN!! tá custando ${current} =)`
-                        });
-                    }
+  return line;
+};
 
-                    if (typeof limits.min !== "number") limits.min = quotes.price.regularMarketOpen * 0.995
-                    if (current <= limits.min) {
-                        notifier.notify({
-                            'title': 'A liseira bateu e ficou',
-                            'message': `Perdendo!! tá custando ${current} =(`
-                        });
-                    }
-                    */
+function createSymbolMonitor(symbol, position, size) {
+  let monitor = grid.set(position.x, position.y, size.height, size.width, contrib.table, {
+    label: `${symbol} Monitor`,
+    keys: true,
+    columnSpacing: 10,
+    columnWidth: [15, 6],
+    interactive: false,
+  });
 
-                    let hist = data.filter(hist => s == hist.title)[0];
+  return monitor;
+};
 
-                    if (hist.x.length == 0) {
-                        hist.x.push("Open");
-                        hist.y.push(quotes.price.regularMarketOpen);
-                    }
+function createNotificationMonitor(symbol, position, size) {
+  let monitor = grid.set(position.x, position.y, size.height, size.width, contrib.table, {
+    label: `${symbol} Notifications`,
+    keys: true,
+    columnSpacing: 10,
+    columnWidth: [15, 10],
+    interactive: true
+  });
+  monitor.notification = false;
+  monitor.highValue = monitor.lowValue = 0.000;
+  monitor.initiated = false;
 
-                    hist.x.push(hist.x.length.toString());
-                    hist.y.push(current);
+  return monitor;
+};
 
-                    if (quotes.price.regularMarketOpen > current) {
-                        hist.style.line = 'red';
-                    } else {
-                        hist.style.line = 'green';
-                    }
+function createSymbolLCDStatus(symbol, position, size) {
+  let initial = QUOTE_STATUS.initial;
+  return grid.set(position.x, position.y, size.height, size.width, contrib.lcd, {
+    label: `${symbol} Status`,
+    display: initial.status,
+    color: initial.color,
+    elementPadding: 2,
+    elements: 4
+  });
+};
 
-                    if (s == 'BRL=X') {
-                        USDLCD.setOptions({color: current > quotes.price.regularMarketOpen ? 'green' : 'red' });
-                        USDLCD.setDisplay(current > quotes.price.regularMarketOpen ? ' UP ' : 'DOWN');
+function createDashboards() {
+  return symbols.map((symbol, index) => {
+    const lineHeight = 12 / symbols.length;
+    const increment = index * lineHeight;
 
-                        USDLine.setData(hist);
+    let symbolDashboard = {};
+    let position = { y: 0 , x: 0 + increment };
+    let size = { height: lineHeight, width: 10 };
+    symbolDashboard.line = createSymbolLine(symbol, position, size);
+    
+    position.y += size.width;
+    size = { height: lineHeight/2, width: 2 };
+    symbolDashboard.monitor = createSymbolMonitor(symbol, position, size);
 
-                        USDMonitor.setData({
-                            headers: [],
-                            data: [
-                                ['Current Price', current.toFixed(4)],
-                                ['Open Price', quotes.price.regularMarketOpen.toFixed(4)],
-                                ['Variation %', (quotes.price.regularMarketChangePercent * 100).toFixed(4)],
-                                [`Variation ${quotes.price.currencySymbol}`, quotes.price.regularMarketChange.toFixed(4)],
-                                ['Highest', quotes.price.regularMarketDayHigh.toFixed(4)],
-                                ['Lowest', quotes.price.regularMarketDayLow.toFixed(4)],
-                            ]
-                        });
-                    } else {
-                        EURLCD.setOptions({color: current > quotes.price.regularMarketOpen ? 'green' : 'red' });
-                        EURLCD.setDisplay(current > quotes.price.regularMarketOpen ? ' UP ' : 'DOWN');
+    position.x += size.height;
+    size = { height: lineHeight/4, width: 2 };
+    symbolDashboard.notificationMonitor = createNotificationMonitor(symbol, position, size);
+    
+    position.x += size.height;
+    size = { height: lineHeight/4, width: 2 };
+    symbolDashboard.lcdStatus = createSymbolLCDStatus(symbol, position, size);
+    
+    symbolDashboard.symbol = symbol;
+    symbolDashboard.lineData = {
+      title: symbol,
+      x: [],
+      y: [],
+      style: {
+          line: QUOTE_STATUS.initial.color
+      }
+    };
 
-                        EURLine.setData(hist);
+    symbolDashboard.notificationMonitor.setData({
+      headers: [],
+       data: [
+          ['Notification', symbolDashboard.notificationMonitor.notification ],
+          ['Low', "Loading..." ],
+          ['High', "Loading..." ],
+        ]
+    });
 
-                        EURMonitor.setData({
-                            headers: [],
-                            data: [
-                                ['Current Price', current.toFixed(4)],
-                                ['Open Price', quotes.price.regularMarketOpen.toFixed(4)],
-                                ['Variation %', (quotes.price.regularMarketChangePercent * 100).toFixed(4)],
-                                [`Variation ${quotes.price.currencySymbol}`, quotes.price.regularMarketChange.toFixed(4)],
-                                ['Highest', quotes.price.regularMarketDayHigh.toFixed(4)],
-                                ['Lowest', quotes.price.regularMarketDayLow.toFixed(4)],
-                                ['        ', '          '],
-                                ['Notification', notification],
-                            ]
-                        });
-                    }
-                    screen.render();
-                }
-            }
-        });
+    symbolDashboard.line.setData(symbolDashboard.lineData);
+
+    return symbolDashboard;
+  });
+};
+
+function currentStatus (open, current) {
+  switch (true) {
+        case (open > current):
+          return QUOTE_STATUS.down;
+        case (open < current):
+          return QUOTE_STATUS.up;
+        default:
+          return QUOTE_STATUS.initial;
+      }
+};
+
+function format(num, place = 4) {
+  return num.toFixed(place);
+};
+
+function notify(price, title, monitor) {
+    notifier.notify({
+      title: title,
+      message: `Currently worth ${price.currency} ${format(price.current)}`,
+      icon: path.join(__dirname, 'icon.png'),
+      actions: ["Snooze this stock", "Snooze all notifications"]
+    }, function (error, response, metadata) {
+      if (metadata.activationValue) {
+
+        switch(metadata.activationValue) {
+          case "Snooze this stock":
+            monitor.notification = false;
+            updateMonitor(monitor);
+            break;
+          case "Snooze all notifications":
+            dashboards.forEach(dashboard => {
+              dashboard.notificationMonitor.notification = false;
+              updateMonitor(dashboard.notificationMonitor);
+            });
+            break;
+        }
+      }
     });
 }
 
-verify();
-setInterval(verify, 5000);
+function updateMonitor(monitor) {
+    monitor.setData({
+      headers: [],
+      data: [
+        ['Notification', monitor.notification ],
+        ['Low', format(monitor.lowValue) ],
+        ['High', format(monitor.highValue) ],
+      ]
+    });
 
-screen.on('resize', function() {
-    USDLine.emit('attach');
-    EURLine.emit('attach');
+    screen.render();    
+};
+
+function watch(dashboards) {
+  dashboards.forEach((dashboard) => {
+    fetchQuote(dashboard.symbol).then(parse).then((price) => {
+      let symbolStatus = currentStatus(price.open, price.current);
+
+      // Line Update
+      dashboard.lineData.style.line = symbolStatus.color;
+
+      if (dashboard.lineData.x.length == 0) {
+        dashboard.lineData.x.push("Open");
+        dashboard.lineData.y.push(price.open);
+      }
+
+      dashboard.lineData.x.push(dashboard.lineData.x.length.toString());
+      dashboard.lineData.y.push(price.current);
+      dashboard.line.setData(dashboard.lineData);
+
+      // Monitor Update
+      dashboard.monitor.setData({
+        headers: [],
+        data: [
+            ['Current Price', format(price.current) ],
+            ['Open Price', format(price.open) ],
+            ['Variation %', format(price.changePercent * 100 ) ],
+            [`Variation ${price.currency}`, format(price.change) ],
+            ['Highest', format(price.highest) ],
+            ['Lowest', format(price.lowest) ],
+        ]
+      });
+
+      //Notitication Update
+      let monitor = dashboard.notificationMonitor;
+      if (! monitor.initiated) {
+        monitor.lowValue = price.current * .99;
+        monitor.highValue = price.current * 1.01;
+        monitor.initiated = true;
+
+        monitor.setData({
+          headers: [],
+          data: [
+            ['Notification', monitor.notification ],
+            ['Low', format(monitor.lowValue) ],
+            ['High', format(monitor.highValue) ],
+          ]
+        });
+      } else {
+        if (monitor.notification) {
+
+          if (price.current >= monitor.highValue) {
+            notify(price, `${dashboard.symbol}: value higher than expected`, monitor);
+          }
+
+          if (monitor.lowValue > price.current) {
+            notify(price, `${dashboard.symbol}: value below than expected`, monitor);
+          }
+
+        }
+      }
+
+      // LCD Update
+      dashboard.lcdStatus.setOptions({ color: symbolStatus.color });
+      dashboard.lcdStatus.setDisplay(symbolStatus.status);
+
+      screen.render();
+    });
+  });
+
+};
+
+let dashboards = createDashboards(symbols);
+watch(dashboards);
+dashboards[selectedMonitor].notificationMonitor.focus();
+screen.render();
+
+screen.key(['left'], function(ch, key) {
+  let monitor = dashboards[selectedMonitor].notificationMonitor;
+  let option = monitor.children[1].selected;
+
+  if (monitor.initiated) {
+    switch(option) {
+    case 0:
+      monitor.notification = ! monitor.notification;
+      break;
+    case 1:
+      if (monitor.highValue > (monitor.lowValue - 0.01))
+        monitor.lowValue -= 0.01;
+      break;
+    case 2:
+      if ((monitor.highValue - 0.01) > monitor.lowValue)
+        monitor.highValue -= 0.01;
+      break;
+  }
+
+  updateMonitor(monitor);
+}
+
 });
+
+screen.key(['right'], function(ch, key) {
+  let monitor = dashboards[selectedMonitor].notificationMonitor;
+  let option = monitor.children[1].selected;
+
+  if (monitor.initiated) {
+    switch(option) {
+      case 0:
+        monitor.notification = ! monitor.notification;
+        break;
+      case 1:
+        if (monitor.highValue > (monitor.lowValue + 0.01))
+          monitor.lowValue += 0.01;
+        break;
+      case 2:
+        if ((monitor.highValue + 0.01) > monitor.lowValue)
+          monitor.highValue += 0.01;
+        break;
+    }
+  }
+
+  updateMonitor(monitor);
+});
+
+screen.key(['space'], function(ch, key) {
+  selectedMonitor ++;
+  if (selectedMonitor >= dashboards.length)
+    selectedMonitor = 0;
+
+  monitor = dashboards[selectedMonitor].notificationMonitor;
+  monitor.focus();
+
+  screen.render();
+});
+
+setInterval(() => {
+  watch(dashboards);
+}, 10000);

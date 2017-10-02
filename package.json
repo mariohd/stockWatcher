@@ -12,6 +12,7 @@
     "blessed": "^0.1.81",
     "blessed-contrib": "^4.8.5",
     "install": "^0.10.1",
+    "minimist": "^1.2.0",
     "node-notifier": "^5.1.2",
     "npm": "^5.4.2",
     "yahoo-finance": "^0.3.2"
